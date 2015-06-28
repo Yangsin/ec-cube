@@ -30,6 +30,6 @@ class CartController
 {
     public function index(Application $app)
     {
-        return '';
+        return $app['view']->render('Block/cart.twig');
     }
 }

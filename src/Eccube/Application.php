@@ -21,14 +21,20 @@
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
 
-
 namespace Eccube;
 
 use Symfony\Component\Finder\Finder;
 use Symfony\Component\Yaml\Yaml;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 use Symfony\Component\EventDispatcher\EventDispatcher;
+use Symfony\Component\Form\FormBuilder;
+use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
+use Symfony\Component\Security\Core\User\UserInterface;
+use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
+use Monolog\Logger;
+use Knp\Provider\ConsoleServiceProvider;
 
 class Application extends \Silex\Application
 {
@@ -92,22 +98,79 @@ class Application extends \Silex\Application
             return array_merge($config_constant, $config);
         });
 
+        // load config dev
+        if ($app['env'] === 'dev' || $app['env'] === 'test') {
+            $conf = $this['config'];
+            $this['config'] = $app->share(function () use($conf) {
+                $confarray = array();
+                $config_dev_file = __DIR__ . '/../../app/config/eccube/config_dev.yml';
+                if (file_exists($config_dev_file)) {
+                    $config_dev = Yaml::parse($config_dev_file);
+                    if (isset($config_dev)) {
+                        $confarray = array_replace_recursive($confarray, $config_dev);
+                    }
+                }
+                return array_replace_recursive($conf, $confarray);
+            });
+        }
+
         $this->register(new \Silex\Provider\ServiceControllerServiceProvider());
         $this->register(new \Silex\Provider\SessionServiceProvider());
 
         $this->register(new \Silex\Provider\TwigServiceProvider(), array(
-            'twig.path' => array(
-                __DIR__ . '/View',
-                __DIR__ . '/../../app/plugin/',
-            ),
             'twig.form.templates' => array('Form/form_layout.twig'),
-            'twig.options' => array('cache' => __DIR__ . '/../../app/cache/twig'),
         ));
         $app['twig'] = $app->share($app->extend("twig", function (\Twig_Environment $twig, \Silex\Application $app) {
             $twig->addExtension(new \Eccube\Twig\Extension\EccubeExtension($app));
+            $twig->addExtension(new \Twig_Extension_StringLoader());
 
             return $twig;
         }));
+        $this->before(function (Request $request, \Silex\Application $app) {
+            //
+            $app['twig'] = $app->share($app->extend("twig", function (\Twig_Environment $twig, \Silex\Application $app) {
+                $paths = array();
+                if (strpos($app['request']->getPathInfo(), $app['config']['admin_dir']) === 0) {
+                    if (file_exists(__DIR__ . '/../../template/admin')) {
+                        $paths[] = __DIR__ . '/../../template/admin';
+                    }
+                    $paths[] = __DIR__ . '/Resource/template/admin';
+                    $paths[] = __DIR__ . '/../../app/plugin';
+                    $cache = __DIR__ . '/../../app/cache/twig/admin';
+                } else {
+                    if (file_exists(__DIR__ . '/../../template/' . $app['config']['template_name'])) {
+                        $paths[] = __DIR__ . '/../../template/' . $app['config']['template_name'];
+                    }
+                    $paths[] = __DIR__ . '/Resource/template/default';
+                    $paths[] = __DIR__ . '/../../app/plugin';
+                    $cache = __DIR__ . '/../../app/cache/twig/' . $app['config']['template_name'];
+                }
+                $twig->setCache($cache);
+                $app['twig.loader']->addLoader(new \Twig_Loader_Filesystem($paths));
+
+                return $twig;
+            }));
+
+            //
+            $BaseInfo = $app['eccube.repository.base_info']->get();
+            $app["twig"]->addGlobal("BaseInfo", $BaseInfo);
+        }, self::EARLY_EVENT);
+
+        $app->on(\Symfony\Component\HttpKernel\KernelEvents::CONTROLLER, function (\Symfony\Component\HttpKernel\Event\FilterControllerEvent $event) use ($app) {
+            if (!$event->isMasterRequest()) {
+                return;
+            }
+
+            $request = $event->getRequest();
+            try {
+                $PageLayout = $app['eccube.repository.page_layout']->getByRoutingName(10, $request->attributes->get('_route'));
+            } catch (\Doctrine\ORM\NoResultException $e) {
+                $PageLayout = $app['eccube.repository.page_layout']->newPageLayout(10);
+            }
+            $app["twig"]->addGlobal("PageLayout", $PageLayout);
+            $app["twig"]->addGlobal("title", $PageLayout->getName());
+        });
+
         $this->register(new \Silex\Provider\UrlGeneratorServiceProvider());
         $this->register(new \Silex\Provider\FormServiceProvider());
         $this->register(new \Silex\Provider\ValidatorServiceProvider());
@@ -133,7 +196,9 @@ class Application extends \Silex\Application
                     return;
                 }
 
-                return new Response('エラーが発生しました.');
+                return $app['view']->render('error.twig', array(
+                    'error' => 'エラーが発生しました.',
+                ));
             });
 
             return;
@@ -141,7 +206,14 @@ class Application extends \Silex\Application
 
         // Mail
         $this['swiftmailer.option'] = $this['config']['mail'];
-        $this->register(new \Silex\Provider\SwiftmailerServiceProvider());
+        // $this->register(new \Silex\Provider\SwiftmailerServiceProvider());
+        if ($app['env'] === 'dev' || $app['env'] === 'test') {
+            if (isset($this['config']['delivery_address'])) {
+                $this['delivery_address'] = $this['config']['delivery_address'];
+            }
+        }
+        $this->register(new ServiceProvider\EccubeSwiftmailerServiceProvider());
+
         $this['mail.message'] = function () {
             return \Swift_Message::newInstance();
         };
@@ -168,9 +240,6 @@ class Application extends \Silex\Application
                 ),
             ),
         ));
-
-        $this->register(new ServiceProvider\EccubeServiceProvider());
-        $this->register(new ServiceProvider\LegacyServiceProvider());
 
        // EventDispatcher
         $app['eccube.event.dispatcher'] = $app->share(function () {
@@ -224,7 +293,7 @@ class Application extends \Silex\Application
         // hook point
         $this->before(function (Request $request, Application $app) {
             $app['eccube.event.dispatcher']->dispatch('eccube.event.app.before');
-        }, \Silex\Application::EARLY_EVENT);
+        }, self::EARLY_EVENT);
 
         $this->before(function (Request $request, \Silex\Application $app) {
             $event = $app->parseController($request) . '.before';
@@ -244,9 +313,9 @@ class Application extends \Silex\Application
             $event = $app->parseController($request) . '.finish';
             $app['eccube.event.dispatcher']->dispatch($event);
         });
-        
+
+
         // Security
-        $app['colnum'] = 1;
         $this->register(new \Silex\Provider\SecurityServiceProvider(), array(
              'security.firewalls' => array(
                 'admin' => array(
@@ -263,7 +332,7 @@ class Application extends \Silex\Application
                         'logout_path' => '/admin/logout',
                         'target_url' => '/admin/',
                     ),
-                    'users' => $app['eccube.repository.member'],
+                    'users' => $app['orm.em']->getRepository('Eccube\Entity\Member'),
                     'anonymous' => true,
                 ),
                 'customer' => array(
@@ -280,7 +349,7 @@ class Application extends \Silex\Application
                         'logout_path' => '/logout',
                         'target_url' => '/',
                     ),
-                    'users' => $app['eccube.repository.customer'],
+                    'users' => $app['orm.em']->getRepository('Eccube\Entity\Customer'),
                     'anonymous' => true,
                 ),
              ),
@@ -310,6 +379,8 @@ class Application extends \Silex\Application
             return ($token !== null) ? $token->getUser() : null;
         });
 
+        $this->register(new ServiceProvider\EccubeServiceProvider());
+
         $app['filesystem'] = function () {
             return new \Symfony\Component\Filesystem\Filesystem();
         };
@@ -317,6 +388,7 @@ class Application extends \Silex\Application
         $app->register(new \Silex\Provider\MonologServiceProvider(), array(
             'monolog.logfile' => __DIR__ . '/../../app/log/site.log',
         ));
+
 
         // Silex Web Profiler
         if ($app['env'] === 'dev') {
@@ -328,7 +400,7 @@ class Application extends \Silex\Application
         }
 
         $app->mount('', new ControllerProvider\FrontControllerProvider());
-        $app->mount('/admin', new ControllerProvider\AdminControllerProvider());
+        $app->mount($app['config']['admin_dir'], new ControllerProvider\AdminControllerProvider());
         $app->error(function (\Exception $e, $code) use ($app) {
             if ($app['debug']) {
                 return;
@@ -341,79 +413,9 @@ class Application extends \Silex\Application
                     break;
             }
 
-            return new Response('エラーが発生しました.');
-        });
-
-        $this['callback_resolver'] = $this->share(function () use ($app) {
-            return new LegacyCallbackResolver($app);
-        });
-
-        $app['eccube.layout'] = null;
-        $this->before(function (Request $request, \Silex\Application $app) {
-            $url = str_replace($app['config']['root'], '', $app['request']->server->get('REDIRECT_URL'));
-            if (substr($url, -1) === '/' || $url === '') {
-                $url .= 'index.php';
-            }
-            if ($url === '/index.php') {
-                $url = 'index.php';
-            }
-
-            // anywhere指定のもの以外を取得
-            $qb = $app['orm.em']->createQueryBuilder()
-                ->select('p, bp, b')
-                ->from('Eccube\Entity\PageLayout', 'p')
-                ->leftJoin('p.BlocPositions', 'bp', \Doctrine\ORM\Query\Expr\Join::WITH, 'p.page_id = bp.page_id')
-                ->innerJoin('bp.Bloc', 'b')
-                ->andWhere('p.device_type_id = :device_type_id AND p.url = :url AND bp.anywhere != 1')
-                ->addOrderBy('bp.target_id', 'ASC')
-                ->addOrderBy('bp.bloc_row', 'ASC');
-            try {
-                $result = $qb->getQuery()
-                    ->setParameters(array(
-                        'device_type_id'    => 10,
-                        'url'               => $url,
-                    ))
-                    ->getSingleResult()
-                ;
-                // anywhere指定のものをマージ
-                $AnywhereBlocPositions = $app['orm.em']
-                    ->getRepository('Eccube\Entity\BlocPosition')
-                    ->findBy(array(
-                        'device_type_id' => 10,
-                        'anywhere' => 1,
-                    ))
-                ;
-                // TODO: 無理やり計算して無理やりいれている
-                $BlocPositions = $result->getBlocPositions();
-                foreach ($AnywhereBlocPositions as $AnywhereBlocPosition) {
-                    $result->addBlocPosition($AnywhereBlocPosition);
-                }
-                $hasLeftNavi = false;
-                $hasRightNavi = false;
-                foreach ($BlocPositions as $BlocPosition) {
-                    if ($BlocPosition->getTargetId() == 1) {
-                        $hasLeftNavi = true;
-                    }
-                    if ($BlocPosition->getTargetId() == 3) {
-                        $hasRightNavi = true;
-                    }
-                }
-                $colnum = 1;
-                if ($hasLeftNavi) {
-                    $colnum ++;
-                    $app['hasLeftNavi'] = true;
-                }
-                if ($hasRightNavi) {
-                    $colnum ++;
-                }
-                $app['colnum'] = $colnum;
-
-            } catch (\Doctrine\ORM\NoResultException $e) {
-                $result = null;
-                $app['colnum'] = 1;
-            }
-
-            $app['eccube.layout'] = $result;
+            return $app['view']->render('error.twig', array(
+                'error' => 'エラーが発生しました.',
+            ));
         });
 
         if ($app['env'] === 'test') {
@@ -446,10 +448,224 @@ class Application extends \Silex\Application
                     file_put_contents($constant_file, Yaml::dump($config_constant));
                 }
             }
-
             return array_merge($config_constant, $config);
         }));
 
+        // ログイン時のイベント
         $app['dispatcher']->addListener(\Symfony\Component\Security\Http\SecurityEvents::INTERACTIVE_LOGIN, array($app['eccube.event_listner.security'], 'onInteractiveLogin'));
+    }
+
+    public function addSuccess($message, $namespace = 'front')
+    {
+        $this['session']->getFlashBag()->add('eccube.' . $namespace . '.success', $message);
+    }
+
+    public function addError($message, $namespace = 'front')
+    {
+        $this['session']->getFlashBag()->add('eccube.' . $namespace . '.error', $message);
+    }
+
+    public function addDanger($message, $namespace = 'front')
+    {
+        $this['session']->getFlashBag()->add('eccube.' . $namespace . '.danger', $message);
+    }
+
+    public function addWarning($message, $namespace = 'front')
+    {
+        $this['session']->getFlashBag()->add('eccube.' . $namespace . '.warning', $message);
+    }
+
+    public function addInfo($message, $namespace = 'front')
+    {
+        $this['session']->getFlashBag()->add('eccube.' . $namespace . '.info', $message);
+    }
+
+    /*
+     * 以下のコードの著作権について
+     *
+     * (c) Fabien Potencier <fabien@symfony.com>
+     *
+     * For the full copyright and license information, please view the silex
+     * LICENSE file that was distributed with this source code.
+     */
+    /** FormTrait */
+    /**
+     * Creates and returns a form builder instance
+     *
+     * @param mixed $data    The initial data for the form
+     * @param array $options Options for the form
+     *
+     * @return FormBuilder
+     */
+    public function form($data = null, array $options = array())
+    {
+        return $this['form.factory']->createBuilder('form', $data, $options);
+    }
+
+    /** MonologTrait */
+    /**
+     * Adds a log record.
+     *
+     * @param string $message The log message
+     * @param array  $context The log context
+     * @param int    $level   The logging level
+     *
+     * @return bool Whether the record has been processed
+     */
+    public function log($message, array $context = array(), $level = Logger::INFO)
+    {
+        return $this['monolog']->addRecord($level, $message, $context);
+    }
+
+    /** SecurityTrait */
+    /**
+     * Gets a user from the Security Context.
+     *
+     * @return mixed
+     *
+     * @see TokenInterface::getUser()
+     */
+    public function user()
+    {
+        if (null === $token = $this['security']->getToken()) {
+            return;
+        }
+
+        if (!is_object($user = $token->getUser())) {
+            return;
+        }
+
+        return $user;
+    }
+
+    /**
+     * Encodes the raw password.
+     *
+     * @param UserInterface $user     A UserInterface instance
+     * @param string        $password The password to encode
+     *
+     * @return string The encoded password
+     *
+     * @throws \RuntimeException when no password encoder could be found for the user
+     */
+    public function encodePassword(UserInterface $user, $password)
+    {
+        return $this['security.encoder_factory']->getEncoder($user)->encodePassword($password, $user->getSalt());
+    }
+
+    /** SwiftmailerTrait */
+    /**
+     * Sends an email.
+     *
+     * @param \Swift_Message $message          A \Swift_Message instance
+     * @param array          $failedRecipients An array of failures by-reference
+     *
+     * @return int The number of sent messages
+     */
+    public function mail(\Swift_Message $message, &$failedRecipients = null)
+    {
+        return $this['mailer']->send($message, $failedRecipients);
+    }
+
+    /** TranslationTrait */
+    /**
+     * Translates the given message.
+     *
+     * @param string $id         The message id
+     * @param array  $parameters An array of parameters for the message
+     * @param string $domain     The domain for the message
+     * @param string $locale     The locale
+     *
+     * @return string The translated string
+     */
+    public function trans($id, array $parameters = array(), $domain = 'messages', $locale = null)
+    {
+        return $this['translator']->trans($id, $parameters, $domain, $locale);
+    }
+
+    /**
+     * Translates the given choice message by choosing a translation according to a number.
+     *
+     * @param string $id         The message id
+     * @param int    $number     The number to use to find the indice of the message
+     * @param array  $parameters An array of parameters for the message
+     * @param string $domain     The domain for the message
+     * @param string $locale     The locale
+     *
+     * @return string The translated string
+     */
+    public function transChoice($id, $number, array $parameters = array(), $domain = 'messages', $locale = null)
+    {
+        return $this['translator']->transChoice($id, $number, $parameters, $domain, $locale);
+    }
+
+    /** TwigTrait */
+    /**
+     * Renders a view and returns a Response.
+     *
+     * To stream a view, pass an instance of StreamedResponse as a third argument.
+     *
+     * @param string   $view       The view name
+     * @param array    $parameters An array of parameters to pass to the view
+     * @param Response $response   A Response instance
+     *
+     * @return Response A Response instance
+     */
+    public function render($view, array $parameters = array(), Response $response = null)
+    {
+        $twig = $this['twig'];
+
+        if ($response instanceof StreamedResponse) {
+            $response->setCallback(function () use ($twig, $view, $parameters) {
+                $twig->display($view, $parameters);
+            });
+        } else {
+            if (null === $response) {
+                $response = new Response();
+            }
+            $response->setContent($this['view']->render($view, $parameters));
+        }
+
+        return $response;
+    }
+
+    /**
+     * Renders a view.
+     *
+     * @param string $view       The view name
+     * @param array  $parameters An array of parameters to pass to the view
+     *
+     * @return Response A Response instance
+     */
+    public function renderView($view, array $parameters = array())
+    {
+        return $this['view']->render($view, $parameters);
+    }
+
+    /** UrlGeneratorTrait */
+    /**
+     * Generates a path from the given parameters.
+     *
+     * @param string $route      The name of the route
+     * @param mixed  $parameters An array of parameters
+     *
+     * @return string The generated path
+     */
+    public function path($route, $parameters = array())
+    {
+        return $this['url_generator']->generate($route, $parameters, UrlGeneratorInterface::ABSOLUTE_PATH);
+    }
+
+    /**
+     * Generates an absolute URL from the given parameters.
+     *
+     * @param string $route      The name of the route
+     * @param mixed  $parameters An array of parameters
+     *
+     * @return string The generated URL
+     */
+    public function url($route, $parameters = array())
+    {
+        return $this['url_generator']->generate($route, $parameters, UrlGeneratorInterface::ABSOLUTE_URL);
     }
 }

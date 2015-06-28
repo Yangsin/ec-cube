@@ -35,7 +35,7 @@ HTTP_URL=${HTTP_URL:-"http://test.local/"}
 HTTPS_URL=${HTTPS_URL:-"http://test.local/"}
 ROOT_URLPATH=${ROOT_URLPATH:-"/"}
 DOMAIN_NAME=${DOMAIN_NAME:-""}
-ADMIN_DIR=${ADMIN_DIR:-"admin/"}
+ADMIN_DIR=${ADMIN_DIR:-"admin"}
 
 DBSERVER=${DBSERVER-"127.0.0.1"}
 DBNAME=${DBNAME:-"cube3_dev"}
@@ -46,6 +46,7 @@ ADMINPASS="f6b126507a5d00dbdbb0f326fe855ddf84facd57c5603ffdf7e08fbb46bd633c"
 AUTH_MAGIC="droucliuijeanamiundpnoufrouphudrastiokec"
 
 DBTYPE=$1;
+GET_COMPOSER=$2;
 
 case "${DBTYPE}" in
 "pgsql" )
@@ -62,7 +63,7 @@ case "${DBTYPE}" in
     MYSQL=mysql
     ROOTUSER=root
     ROOTPASS=$DBPASS
-    DBSERVER="127.0.0.1"
+    DBSERVER=$DBSERVER
     DBPORT=3306
     DBDRIVER=pdo_mysql
 ;;
@@ -88,8 +89,6 @@ adjust_directory_permissions()
     chmod go+w "./app/fonts"
     chmod go+w "./app/log"
     chmod go+w "./app/logs"
-    chmod -R go+w "./src/Eccube/page"
-    chmod go+w "./src/smarty_extends"
     chmod go+w "./app/upload"
     chmod go+w "./app/upload/csv"
 }
@@ -98,10 +97,9 @@ create_sequence_tables()
 {
     SEQUENCES="
 dtb_best_products_best_id_seq
-dtb_bloc_bloc_id_seq
 dtb_category_category_id_seq
-dtb_class_class_id_seq
-dtb_classcategory_classcategory_id_seq
+dtb_class_name_class_name_id_seq
+dtb_class_category_class_category_id_seq
 dtb_csv_no_seq
 dtb_csv_sql_sql_id_seq
 dtb_customer_customer_id_seq
@@ -116,9 +114,8 @@ dtb_news_news_id_seq
 dtb_order_order_id_seq
 dtb_order_detail_order_detail_id_seq
 dtb_other_deliv_other_deliv_id_seq
-dtb_pagelayout_page_id_seq
 dtb_payment_payment_id_seq
-dtb_products_class_product_class_id_seq
+dtb_product_class_product_class_id_seq
 dtb_products_product_id_seq
 dtb_review_review_id_seq
 dtb_send_history_send_id_seq
@@ -162,8 +159,8 @@ dtb_tax_rule_tax_rule_id_seq
 
 get_optional_sql()
 {
-    echo "INSERT INTO dtb_member (member_id, login_id, password, salt, work, del_flg, authority, creator_id, rank, update_date, create_date) VALUES (2, 'admin', '${ADMINPASS}', '${AUTH_MAGIC}', '1', '0', '0', '0', '1', current_timestamp, current_timestamp);"
-    echo "INSERT INTO dtb_baseinfo (id, shop_name, email01, email02, email03, email04, top_tpl, product_tpl, detail_tpl, mypage_tpl, update_date, point_rate, welcome_point) VALUES (1, '${SHOP_NAME}', '${ADMIN_MAIL}', '${ADMIN_MAIL}', '${ADMIN_MAIL}', '${ADMIN_MAIL}', 'default1', 'default1', 'default1', 'default1', current_timestamp, 0, 0);"
+    echo "INSERT INTO dtb_member (member_id, login_id, password, salt, work, del_flg, authority, creator_id, rank, update_date, create_date) VALUES (2, 'admin', '${ADMINPASS}', '${AUTH_MAGIC}', 1, 0, 0, 1, 1, current_timestamp, current_timestamp);"
+    echo "INSERT INTO dtb_baseinfo (id, shop_name, email01, email02, email03, email04, update_date, point_rate, welcome_point) VALUES (1, '${SHOP_NAME}', '${ADMIN_MAIL}', '${ADMIN_MAIL}', '${ADMIN_MAIL}', '${ADMIN_MAIL}', current_timestamp, 0, 0);"
 }
 
 create_config_php()
@@ -181,7 +178,7 @@ define('DB_PASSWORD', '${CONFIGPASS:-$DBPASS}');
 define('DB_SERVER', '${DBSERVER}');
 define('DB_NAME', '${DBNAME}');
 define('DB_PORT', '${DBPORT}');
-define('ADMIN_DIR', '${ADMIN_DIR}');
+define('ADMIN_DIR', '${ADMIN_DIR}/');
 define('ADMIN_FORCE_SSL', FALSE);
 define('ADMIN_ALLOW_HOSTS', 'a:0:{}');
 define('AUTH_MAGIC', '${AUTH_MAGIC}');
@@ -213,11 +210,13 @@ mail:
     password: 
     encryption: 
     auth_mode: 
+delivery_address: 
 auth_magic: ${AUTH_MAGIC}
 password_hash_algos: sha256
 root: ${ROOT_URLPATH}
+admin_dir: /${ADMIN_DIR}
 tpl: ${ROOT_URLPATH}user_data/packages/default/
-admin_tpl: ${ROOT_URLPATH}user_data/packages/${ADMIN_DIR}
+admin_tpl: ${ROOT_URLPATH}user_data/packages/${ADMIN_DIR}/
 image_path: /upload/save_image/
 shop_name: ${SHOP_NAME}
 release_year: 2015
@@ -263,11 +262,18 @@ create_config_php
 echo "creating ${CONFIG_YML}..."
 create_config_yml
 
+case "${GET_COMPOSER}" in
+"none" )
+echo "not get composer..."
+;;
+* )
 echo "get composer..."
 curl -sS https://getcomposer.org/installer | php
 
 echo "install composer..."
 php ./composer.phar install --dev --no-interaction
+;;
+esac
 
 
 
@@ -322,5 +328,8 @@ case "${DBTYPE}" in
     get_optional_sql | ${MYSQL} -u ${DBUSER} ${PASSOPT} ${DBNAME}
 ;;
 esac
+
+# DB migrator
+php app/console migrations:migrate  --no-interaction
 
 echo "Finished Successful!"

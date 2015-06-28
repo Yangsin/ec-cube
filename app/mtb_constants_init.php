@@ -486,3 +486,7 @@ define('PENDING_ORDER_CANCEL_TIME', 900);
 define('PENDING_ORDER_CANCEL_FLAG', true);
 /** API機能を有効にする(true:する false:しない) */
 define('API_ENABLE_FLAG', false);
+define('DEFAULT_PAGE_COUNT', 10);
+define('ADMIN_PRODUCT_STOCK_STATUS', 3);
+define('ENABLED', 1);
+define('DISABLED', 0);

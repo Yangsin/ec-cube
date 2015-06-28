@@ -30,20 +30,15 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 class MailController
 {
-    protected $title;
-    protected $subtitle;
-
     public function __construct()
     {
-        $this->title = '受注管理';
-        $this->subtitle = 'メール配信';
     }
 
-    public function index(Application $app, $orderId)
+    public function index(Application $app, $id)
     {
         $Order =  $app['orm.em']
             ->getRepository('\Eccube\Entity\Order')
-            ->find($orderId);
+            ->find($id);
 
         if (is_null($Order)) {
             throw new NotFoundHttpException('order not found.');
@@ -51,7 +46,7 @@ class MailController
 
         $MailHistories = $app['orm.em']
             ->getRepository('\Eccube\Entity\MailHistory')
-            ->findBy(array('Order' => $orderId));
+            ->findBy(array('Order' => $id));
 
         $builder = $app['form.factory']->createBuilder('mail');
         $form = $builder->getForm();
@@ -85,7 +80,7 @@ class MailController
                         $data = $form->getData();
                         $body = $this->createBody($app, $data['header'], $data['footer'], $Order);
 
-                        return $app['view']->render('Admin/Order/mail_confirm.twig', array(
+                        return $app['view']->render('Order/mail_confirm.twig', array(
                             'form' => $form->createView(),
                             'title' => $this->title,
                             'subtitle' => $this->subtitle,
@@ -129,10 +124,8 @@ class MailController
             }
         }
 
-        return $app['view']->render('Admin/Order/mail.twig', array(
+        return $app['view']->render('Order/mail.twig', array(
             'form' => $form->createView(),
-            'title' => $this->title,
-            'subtitle' => $this->subtitle,
             'Order' => $Order,
             'MailHistories' => $MailHistories
         ));
@@ -148,7 +141,7 @@ class MailController
             throw new HttpException('history not found.');
         }
 
-        return $app['view']->render('Admin/Order/mail_view.twig', array(
+        return $app['view']->render('Order/mail_view.twig', array(
             'subject' => $MailHistory->getSubject(),
             'body' => $MailHistory->getMailBody()
         ));
@@ -156,7 +149,7 @@ class MailController
 
     protected function createBody($app, $header, $footer, $Order)
     {
-        return $app['twig']->render('Mail/order.twig', array(
+        return $app['view']->render('Mail/order.twig', array(
             'header' => $header,
             'footer' => $footer,
             'Order' => $Order,

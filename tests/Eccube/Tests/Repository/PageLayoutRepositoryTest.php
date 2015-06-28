@@ -71,7 +71,7 @@ class PageLayoutRepositoryTest extends \PHPUnit_Framework_TestCase
         $app = $this->createApplication();
 
         $expected = array(
-            'url' => 'index.php',
+            'url' => 'homepage',
             'device_type_id' => $app['config']['device_type_pc'],
         );
 
@@ -85,8 +85,11 @@ class PageLayoutRepositoryTest extends \PHPUnit_Framework_TestCase
         $this->assertSame($actual, $expected);
     }
 
-    public function test_findOrCreate_findMobileMyPage()
+    /*public function test_findOrCreate_findMobileMyPage()
     {
+        // 非対応予定のためスキップ
+        self::markTestSkipped();
+
         $app = $this->createApplication();
 
         $expected = array(
@@ -102,10 +105,13 @@ class PageLayoutRepositoryTest extends \PHPUnit_Framework_TestCase
         );
 
         $this->assertSame($actual, $expected);
-    }
+    }*/
 
     public function test_findOrCreate_findSmartphoneProduct()
     {
+        // 非対応予定のためスキップ
+        self::markTestSkipped();
+
         $app = $this->createApplication();
 
         $expected = array(
